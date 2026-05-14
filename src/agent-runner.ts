@@ -266,6 +266,38 @@ export async function runAgent(
   // Resolve thinking level: explicit option > agent config > undefined (inherit)
   const thinkingLevel = options.thinkingLevel ?? agentConfig?.thinking;
 
+  const disallowedSet = agentConfig?.disallowedTools
+    ? new Set(agentConfig.disallowedTools)
+    : undefined;
+
+  // Enumerate extension-registered tool names from the loaded resource loader.
+  // Extensions populate `extension.tools` during `loader.reload()` and the set
+  // is stable afterwards — `bindExtensions` does not register new tools.
+  const extensionToolNames: string[] = [];
+  if (extensions !== false) {
+    const loaded = loader.getExtensions();
+    for (const extension of loaded.extensions) {
+      for (const toolName of extension.tools.keys()) {
+        extensionToolNames.push(toolName);
+      }
+    }
+  }
+
+  // Build the master tool allowlist applied at session construction.
+  // pi-mono's `allowedToolNames` gates BOTH registration and the initial active
+  // set, so listing the exact final set here means the session is correctly
+  // scoped from the first instant — no post-construction narrowing required.
+  const builtinToolNameSet = new Set(toolNames);
+  const allowedTools = [...toolNames, ...extensionToolNames].filter((t) => {
+    if (EXCLUDED_TOOL_NAMES.includes(t)) return false;
+    if (disallowedSet?.has(t)) return false;
+    if (builtinToolNameSet.has(t)) return true;
+    if (Array.isArray(extensions)) {
+      return extensions.some(ext => t.startsWith(ext) || t.includes(ext));
+    }
+    return extensions === true;
+  });
+
   const sessionOpts: Parameters<typeof createAgentSession>[0] = {
     cwd: effectiveCwd,
     agentDir,
@@ -273,7 +305,7 @@ export async function runAgent(
     settingsManager: SettingsManager.create(effectiveCwd, agentDir),
     modelRegistry: ctx.modelRegistry,
     model,
-    tools: toolNames,
+    tools: allowedTools,
     resourceLoader: loader,
   };
   if (thinkingLevel) {
@@ -287,35 +319,10 @@ export async function runAgent(
     options.agentId ? `${baseSessionName}#${options.agentId.slice(0, 8)}` : baseSessionName,
   );
 
-  // Build disallowed tools set from agent config
-  const disallowedSet = agentConfig?.disallowedTools
-    ? new Set(agentConfig.disallowedTools)
-    : undefined;
-
-  // Filter active tools: remove our own tools to prevent nesting,
-  // apply extension allowlist if specified, and apply disallowedTools denylist
-  if (extensions !== false) {
-    const builtinToolNameSet = new Set(toolNames);
-    const activeTools = session.getActiveToolNames().filter((t) => {
-      if (EXCLUDED_TOOL_NAMES.includes(t)) return false;
-      if (disallowedSet?.has(t)) return false;
-      if (builtinToolNameSet.has(t)) return true;
-      if (Array.isArray(extensions)) {
-        return extensions.some(ext => t.startsWith(ext) || t.includes(ext));
-      }
-      return true;
-    });
-    session.setActiveToolsByName(activeTools);
-  } else if (disallowedSet) {
-    // Even with extensions disabled, apply denylist to built-in tools
-    const activeTools = session.getActiveToolNames().filter(t => !disallowedSet.has(t));
-    session.setActiveToolsByName(activeTools);
-  }
-
   // Bind extensions so that session_start fires and extensions can initialize
-  // (e.g. loading credentials, setting up state). Placed after tool filtering
-  // so extension-provided skills/prompts from extendResourcesFromExtensions()
-  // respect the active tool set. All ExtensionBindings fields are optional.
+  // (e.g. loading credentials, setting up state). Tool gating already happened
+  // at session construction via the `tools:` allowlist above — no separate
+  // post-bind filter is needed. All ExtensionBindings fields are optional.
   await session.bindExtensions({
     onError: (err) => {
       options.onToolActivity?.({

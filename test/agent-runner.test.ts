@@ -3,12 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
   createAgentSession,
   defaultResourceLoaderCtor,
+  loaderExtensionsRef,
   getAgentDir,
   sessionManagerInMemory,
   settingsManagerCreate,
 } = vi.hoisted(() => ({
   createAgentSession: vi.fn(),
   defaultResourceLoaderCtor: vi.fn(),
+  loaderExtensionsRef: { current: { extensions: [] as Array<{ tools: Map<string, unknown> }>, errors: [], runtime: {} } },
   getAgentDir: vi.fn(() => "/mock/agent-dir"),
   sessionManagerInMemory: vi.fn(() => ({ kind: "memory-session-manager" })),
   settingsManagerCreate: vi.fn(() => ({ kind: "settings-manager" })),
@@ -22,6 +24,10 @@ vi.mock("@mariozechner/pi-coding-agent", () => ({
     }
 
     async reload() {}
+
+    getExtensions() {
+      return loaderExtensionsRef.current;
+    }
   },
   getAgentDir,
   SessionManager: { inMemory: sessionManagerInMemory },
@@ -113,6 +119,7 @@ beforeEach(() => {
   getAgentDir.mockClear();
   sessionManagerInMemory.mockClear();
   settingsManagerCreate.mockClear();
+  loaderExtensionsRef.current = { extensions: [], errors: [], runtime: {} };
 });
 
 describe("agent-runner final output capture", () => {
@@ -320,5 +327,204 @@ describe("agent-runner usage callback wiring", () => {
     });
 
     expect(seen).toEqual([{ reason: "threshold", tokensBefore: 12345 }]);
+  });
+});
+
+// ─── master tool allowlist (issue #47) ──────────────────────────────────
+// Tool gating happens at `createAgentSession` time via the `tools:`
+// parameter. pi-mono's `allowedToolNames` is the master gate: it controls
+// BOTH which tools get registered and which enter the initial active set.
+// No post-construction `setActiveToolsByName` filter is needed.
+
+import {
+  getAgentConfig,
+  getConfig,
+  getToolNamesForType,
+} from "../src/agent-types.js";
+
+const BUILTINS_7 = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+
+function makeAgentConfig(overrides: Record<string, unknown> = {}) {
+  return {
+    name: "test-agent",
+    description: "Test",
+    builtinToolNames: BUILTINS_7,
+    extensions: true as boolean | string[],
+    skills: false as boolean | string[],
+    systemPrompt: "Test.",
+    promptMode: "replace" as const,
+    inheritContext: false,
+    runInBackground: false,
+    isolated: false,
+    ...overrides,
+  };
+}
+
+function makeConfig(overrides: Record<string, unknown> = {}) {
+  return {
+    displayName: "test-agent",
+    description: "Test",
+    builtinToolNames: BUILTINS_7,
+    extensions: true as boolean | string[],
+    skills: false as boolean | string[],
+    promptMode: "replace" as const,
+    ...overrides,
+  };
+}
+
+function withExtensions(toolNames: string[]) {
+  loaderExtensionsRef.current = {
+    extensions: [{ tools: new Map(toolNames.map((n) => [n, {}])) }],
+    errors: [],
+    runtime: {},
+  };
+}
+
+function lastToolsPassed(): string[] {
+  return createAgentSession.mock.calls[0][0].tools;
+}
+
+describe("agent-runner master tool allowlist", () => {
+  it("extensions: true with extension tools — all 7 built-ins plus extension tools land in the allowlist", async () => {
+    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+    vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: true }));
+    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+    withExtensions(["mcp", "mcp_call"]);
+    const { session } = createSession("OK");
+    createAgentSession.mockResolvedValue({ session });
+
+    await runAgent(ctx, "Explore", "go", { pi });
+
+    // Order is not semantically meaningful (pi-mono dedupes via Set);
+    // assert membership and exact size instead.
+    const tools = lastToolsPassed();
+    expect(tools).toHaveLength(BUILTINS_7.length + 2);
+    expect(new Set(tools)).toEqual(new Set([...BUILTINS_7, "mcp", "mcp_call"]));
+  });
+
+  it("denylist beats allowlist when a tool matches both", async () => {
+    // `mcp` is both allowlisted (matches `extensions: ["mcp"]` prefix) and denylisted.
+    // The filter must drop it; `mcp_call` (allowlisted, not denylisted) must survive.
+    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: ["mcp"] }));
+    vi.mocked(getAgentConfig).mockReturnValueOnce(
+      makeAgentConfig({ extensions: ["mcp"], disallowedTools: ["mcp"] }),
+    );
+    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+    withExtensions(["mcp", "mcp_call"]);
+    const { session } = createSession("OK");
+    createAgentSession.mockResolvedValue({ session });
+
+    await runAgent(ctx, "Explore", "go", { pi });
+
+    const tools = lastToolsPassed();
+    expect(tools).not.toContain("mcp");
+    expect(tools).toContain("mcp_call");
+  });
+
+  it("enumerates tools across multiple loaded extensions", async () => {
+    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+    vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: true }));
+    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+    // Two separate extensions, each registering one tool — must both surface.
+    loaderExtensionsRef.current = {
+      extensions: [
+        { tools: new Map([["tool_a", {}]]) },
+        { tools: new Map([["tool_b", {}]]) },
+      ],
+      errors: [],
+      runtime: {},
+    };
+    const { session } = createSession("OK");
+    createAgentSession.mockResolvedValue({ session });
+
+    await runAgent(ctx, "Explore", "go", { pi });
+
+    const tools = lastToolsPassed();
+    expect(tools).toContain("tool_a");
+    expect(tools).toContain("tool_b");
+  });
+
+  it("extensions: ['mcp'] allowlist — keeps prefix matches, drops non-matches", async () => {
+    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: ["mcp"] }));
+    vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: ["mcp"] }));
+    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+    withExtensions(["mcp", "mcp_call", "other"]);
+    const { session } = createSession("OK");
+    createAgentSession.mockResolvedValue({ session });
+
+    await runAgent(ctx, "Explore", "go", { pi });
+
+    const tools = lastToolsPassed();
+    for (const b of BUILTINS_7) expect(tools).toContain(b);
+    expect(tools).toContain("mcp");
+    expect(tools).toContain("mcp_call");
+    expect(tools).not.toContain("other");
+  });
+
+  it("disallowedTools removes both built-ins and extension tools", async () => {
+    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+    vi.mocked(getAgentConfig).mockReturnValueOnce(
+      makeAgentConfig({ extensions: true, disallowedTools: ["bash", "mcp"] }),
+    );
+    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+    withExtensions(["mcp", "mcp_call"]);
+    const { session } = createSession("OK");
+    createAgentSession.mockResolvedValue({ session });
+
+    await runAgent(ctx, "Explore", "go", { pi });
+
+    const tools = lastToolsPassed();
+    expect(tools).not.toContain("bash");
+    expect(tools).not.toContain("mcp");
+    expect(tools).toContain("mcp_call");
+    expect(tools).toContain("read");
+  });
+
+  it("EXCLUDED_TOOL_NAMES never reach the allowlist even if an extension registers them", async () => {
+    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+    vi.mocked(getAgentConfig).mockReturnValueOnce(makeAgentConfig({ extensions: true }));
+    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+    withExtensions(["Agent", "get_subagent_result", "steer_subagent", "ok_ext"]);
+    const { session } = createSession("OK");
+    createAgentSession.mockResolvedValue({ session });
+
+    await runAgent(ctx, "Explore", "go", { pi });
+
+    const tools = lastToolsPassed();
+    expect(tools).not.toContain("Agent");
+    expect(tools).not.toContain("get_subagent_result");
+    expect(tools).not.toContain("steer_subagent");
+    expect(tools).toContain("ok_ext");
+  });
+
+  it("extensions: false with disallowedTools — denylist applies to built-ins", async () => {
+    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: false }));
+    vi.mocked(getAgentConfig).mockReturnValueOnce(
+      makeAgentConfig({ extensions: false, disallowedTools: ["bash"] }),
+    );
+    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+    const { session } = createSession("OK");
+    createAgentSession.mockResolvedValue({ session });
+
+    await runAgent(ctx, "Explore", "go", { pi });
+
+    const tools = lastToolsPassed();
+    expect(tools).not.toContain("bash");
+    expect(tools).toEqual(BUILTINS_7.filter((t) => t !== "bash"));
+  });
+
+  it("does not call setActiveToolsByName post-construction (gating is at construction)", async () => {
+    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: true }));
+    vi.mocked(getAgentConfig).mockReturnValueOnce(
+      makeAgentConfig({ extensions: true, disallowedTools: ["bash"] }),
+    );
+    vi.mocked(getToolNamesForType).mockReturnValueOnce(BUILTINS_7);
+    withExtensions(["mcp"]);
+    const { session } = createSession("OK");
+    createAgentSession.mockResolvedValue({ session });
+
+    await runAgent(ctx, "Explore", "go", { pi });
+
+    expect(session.setActiveToolsByName).not.toHaveBeenCalled();
   });
 });
