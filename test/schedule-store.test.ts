@@ -139,6 +139,31 @@ describe("ScheduleStore", () => {
     expect(store.list().map(j => j.id).sort()).toEqual(["a", "b"]);
   });
 
+  it("does not create the backing directory until a mutation persists", () => {
+    const dir = join(tmp, ".pi", "subagent-schedules");
+    const file = join(dir, "sess.json");
+
+    // Constructing + read-only use must not touch the filesystem.
+    const store = new ScheduleStore(file);
+    expect(store.list()).toEqual([]);
+    expect(existsSync(dir)).toBe(false);
+
+    // First mutation lazily creates the directory.
+    store.add(makeJob());
+    expect(existsSync(dir)).toBe(true);
+    expect(existsSync(file)).toBe(true);
+  });
+
+  it("no-op update/remove of an unknown id never creates the backing directory", () => {
+    const dir = join(tmp, ".pi", "subagent-schedules");
+    const file = join(dir, "sess.json");
+    const store = new ScheduleStore(file);
+
+    expect(store.update("nonexistent", { name: "x" })).toBeUndefined();
+    expect(store.remove("nonexistent")).toBe(false);
+    expect(existsSync(dir)).toBe(false);
+  });
+
   it("deleteFileIfEmpty unlinks file only when no jobs remain", () => {
     const file = join(tmp, "s.json");
     const store = new ScheduleStore(file);

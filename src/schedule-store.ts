@@ -62,8 +62,12 @@ export class ScheduleStore {
   constructor(filePath: string) {
     this.filePath = filePath;
     this.lockPath = filePath + ".lock";
-    mkdirSync(dirname(filePath), { recursive: true });
     this.load();
+  }
+
+  /** Create the backing directory lazily — only when we're about to persist. */
+  private ensureDir(): void {
+    mkdirSync(dirname(this.filePath), { recursive: true });
   }
 
   /** Load from disk into the in-memory cache. Silent on parse errors. */
@@ -86,6 +90,7 @@ export class ScheduleStore {
 
   /** Acquire lock → reload → mutate → save → release. */
   private withLock<T>(fn: () => T): T {
+    this.ensureDir();
     acquireLock(this.lockPath);
     try {
       this.load();
@@ -121,6 +126,9 @@ export class ScheduleStore {
   }
 
   update(id: string, patch: Partial<ScheduledSubagent>): ScheduledSubagent | undefined {
+    // No-op fast path — an unknown id changes nothing, so don't lock or touch
+    // disk (which would otherwise lazily create the backing directory).
+    if (!this.jobs.has(id)) return undefined;
     return this.withLock(() => {
       const existing = this.jobs.get(id);
       if (!existing) return undefined;
@@ -131,6 +139,8 @@ export class ScheduleStore {
   }
 
   remove(id: string): boolean {
+    // No-op fast path — see update().
+    if (!this.jobs.has(id)) return false;
     return this.withLock(() => this.jobs.delete(id));
   }
 
