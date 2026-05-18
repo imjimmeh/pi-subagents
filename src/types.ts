@@ -12,7 +12,11 @@ export type { ThinkingLevel };
 export type SubagentType = string;
 
 /** Names of the three embedded default agents. */
-export const DEFAULT_AGENT_NAMES = ["general-purpose", "Explore", "Plan"] as const;
+export const DEFAULT_AGENT_NAMES = [
+  "general-purpose",
+  "Explore",
+  "Plan",
+] as const;
 
 /** Memory scope for persistent agent memory. */
 export type MemoryScope = "user" | "project" | "local";
@@ -33,6 +37,8 @@ export interface AgentConfig {
   /** true = inherit all, string[] = only listed, false = none */
   skills: true | string[] | false;
   model?: string;
+  /** Ordered fallback model IDs (provider/modelId) tried when the primary model fails. */
+  fallbackModels?: string[];
   thinking?: ThinkingLevel;
   maxTurns?: number;
   systemPrompt: string;
@@ -55,13 +61,20 @@ export interface AgentConfig {
   source?: "default" | "project" | "global";
 }
 
-export type JoinMode = 'async' | 'group' | 'smart';
+export type JoinMode = "async" | "group" | "smart";
 
 export interface AgentRecord {
   id: string;
   type: SubagentType;
   description: string;
-  status: "queued" | "running" | "completed" | "steered" | "aborted" | "stopped" | "error";
+  status:
+    | "queued"
+    | "running"
+    | "completed"
+    | "steered"
+    | "aborted"
+    | "stopped"
+    | "error";
   result?: string;
   error?: string;
   toolUses: number;

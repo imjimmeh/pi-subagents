@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   getDefaultMaxTurns,
+  getGlobalFallbackModels,
   getGraceTurns,
   normalizeMaxTurns,
   setDefaultMaxTurns,
+  setGlobalFallbackModels,
   setGraceTurns,
 } from "../src/agent-runner.js";
 
@@ -89,5 +91,38 @@ describe("setGraceTurns / getGraceTurns", () => {
   it("clamps negative values to 1", () => {
     setGraceTurns(-5);
     expect(getGraceTurns()).toBe(1);
+  });
+});
+
+describe("setGlobalFallbackModels / getGlobalFallbackModels", () => {
+  beforeEach(() => {
+    setGlobalFallbackModels([]);
+  });
+
+  it("defaults to empty list", () => {
+    expect(getGlobalFallbackModels()).toEqual([]);
+  });
+
+  it("stores ordered, deduplicated models", () => {
+    setGlobalFallbackModels([
+      "anthropic/claude-haiku-4-5-20251001",
+      "openai/gpt-4.1-mini",
+      "anthropic/claude-haiku-4-5-20251001",
+    ]);
+    expect(getGlobalFallbackModels()).toEqual([
+      "anthropic/claude-haiku-4-5-20251001",
+      "openai/gpt-4.1-mini",
+    ]);
+  });
+
+  it("trims blank values", () => {
+    setGlobalFallbackModels([" openai/gpt-4.1-mini ", "   "]);
+    expect(getGlobalFallbackModels()).toEqual(["openai/gpt-4.1-mini"]);
+  });
+
+  it("resets to empty when undefined", () => {
+    setGlobalFallbackModels(["openai/gpt-4.1-mini"]);
+    setGlobalFallbackModels(undefined);
+    expect(getGlobalFallbackModels()).toEqual([]);
   });
 });

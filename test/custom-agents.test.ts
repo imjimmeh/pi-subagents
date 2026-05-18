@@ -8,16 +8,21 @@ import { loadCustomAgents } from "../src/custom-agents.js";
 describe("loadCustomAgents", () => {
   let tmpDir: string;
   let originalHome: string | undefined;
+  let originalAgentDir: string | undefined;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "pi-test-"));
     originalHome = process.env.HOME;
+    originalAgentDir = process.env.PI_CODING_AGENT_DIR;
     process.env.HOME = tmpDir;
+    process.env.PI_CODING_AGENT_DIR = join(tmpDir, ".pi", "agent");
   });
 
   afterEach(() => {
     if (originalHome == null) delete process.env.HOME;
     else process.env.HOME = originalHome;
+    if (originalAgentDir == null) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -33,7 +38,9 @@ describe("loadCustomAgents", () => {
   });
 
   it("loads a basic agent with all frontmatter fields", () => {
-    writeAgent("auditor", `---
+    writeAgent(
+      "auditor",
+      `---
 description: Security Auditor
 tools: read, grep, find
 model: anthropic/claude-opus-4-6
@@ -45,7 +52,8 @@ run_in_background: true
 isolated: true
 ---
 
-You are a security auditor.`);
+You are a security auditor.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.size).toBe(1);
@@ -65,10 +73,13 @@ You are a security auditor.`);
   });
 
   it("uses sensible defaults when frontmatter is empty", () => {
-    writeAgent("minimal", `---
+    writeAgent(
+      "minimal",
+      `---
 ---
 
-Just a prompt.`);
+Just a prompt.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("minimal")!;
@@ -101,23 +112,29 @@ Just a prompt.`);
   });
 
   it("handles tools: none → empty array", () => {
-    writeAgent("notool", `---
+    writeAgent(
+      "notool",
+      `---
 tools: none
 ---
 
-No tools.`);
+No tools.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("notool")!.builtinToolNames).toEqual([]);
   });
 
   it("handles extensions: false → no extensions", () => {
-    writeAgent("noext", `---
+    writeAgent(
+      "noext",
+      `---
 extensions: false
 skills: false
 ---
 
-No extensions.`);
+No extensions.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("noext")!;
@@ -126,12 +143,15 @@ No extensions.`);
   });
 
   it("handles extension allowlist", () => {
-    writeAgent("partial", `---
+    writeAgent(
+      "partial",
+      `---
 extensions: web-search, mcp-server
 skills: planning, review
 ---
 
-Partial access.`);
+Partial access.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("partial")!;
@@ -140,23 +160,33 @@ Partial access.`);
   });
 
   it("passes through unknown tool names (not filtered)", () => {
-    writeAgent("custom-tools", `---
+    writeAgent(
+      "custom-tools",
+      `---
 tools: read, my_custom_tool, grep
 ---
 
-Custom tools.`);
+Custom tools.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     // Unknown tool names are passed through — filtering happens at tool creation time
-    expect(result.get("custom-tools")!.builtinToolNames).toEqual(["read", "my_custom_tool", "grep"]);
+    expect(result.get("custom-tools")!.builtinToolNames).toEqual([
+      "read",
+      "my_custom_tool",
+      "grep",
+    ]);
   });
 
   it("passes through thinking level as-is (no validation)", () => {
-    writeAgent("anythink", `---
+    writeAgent(
+      "anythink",
+      `---
 thinking: turbo
 ---
 
-Any thinking.`);
+Any thinking.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     // Pi validates at session creation — we just pass through
@@ -164,60 +194,78 @@ Any thinking.`);
   });
 
   it("accepts max_turns: 0 as unlimited", () => {
-    writeAgent("unlimited", `---
+    writeAgent(
+      "unlimited",
+      `---
 max_turns: 0
 ---
 
-Unlimited turns.`);
+Unlimited turns.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("unlimited")!.maxTurns).toBe(0);
   });
 
   it("rejects negative max_turns", () => {
-    writeAgent("negturns", `---
+    writeAgent(
+      "negturns",
+      `---
 max_turns: -5
 ---
 
-Negative turns.`);
+Negative turns.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("negturns")!.maxTurns).toBeUndefined();
   });
 
   it("handles prompt_mode: append", () => {
-    writeAgent("appender", `---
+    writeAgent(
+      "appender",
+      `---
 prompt_mode: append
 ---
 
-Extra instructions.`);
+Extra instructions.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("appender")!.promptMode).toBe("append");
   });
 
   it("defaults unknown prompt_mode to replace", () => {
-    writeAgent("badmode", `---
+    writeAgent(
+      "badmode",
+      `---
 prompt_mode: merge
 ---
 
-Unknown mode.`);
+Unknown mode.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("badmode")!.promptMode).toBe("replace");
   });
 
   it("loads multiple agents", () => {
-    writeAgent("agent1", `---
+    writeAgent(
+      "agent1",
+      `---
 description: First
 ---
 
-First agent.`);
-    writeAgent("agent2", `---
+First agent.`,
+    );
+    writeAgent(
+      "agent2",
+      `---
 description: Second
 ---
 
-Second agent.`);
+Second agent.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.size).toBe(2);
@@ -229,11 +277,14 @@ Second agent.`);
     const dir = join(tmpDir, ".pi", "agents");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, "notes.txt"), "not an agent");
-    writeFileSync(join(dir, "real.md"), `---
+    writeFileSync(
+      join(dir, "real.md"),
+      `---
 description: Real Agent
 ---
 
-Real.`);
+Real.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.size).toBe(1);
@@ -241,16 +292,22 @@ Real.`);
   });
 
   it("allows agents with names matching defaults (overrides them)", () => {
-    writeAgent("Explore", `---
+    writeAgent(
+      "Explore",
+      `---
 description: Custom Explore
 ---
 
-Custom explore agent.`);
-    writeAgent("custom", `---
+Custom explore agent.`,
+    );
+    writeAgent(
+      "custom",
+      `---
 description: Custom Agent
 ---
 
-Should be loaded.`);
+Should be loaded.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.has("Explore")).toBe(true);
@@ -259,23 +316,29 @@ Should be loaded.`);
   });
 
   it("handles empty body with frontmatter", () => {
-    writeAgent("nobody", `---
+    writeAgent(
+      "nobody",
+      `---
 description: No body
 tools: read
 ---
-`);
+`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("nobody")!.systemPrompt).toBe("");
   });
 
   it("supports inherit_extensions as alternative to extensions", () => {
-    writeAgent("altkey", `---
+    writeAgent(
+      "altkey",
+      `---
 inherit_extensions: false
 inherit_skills: false
 ---
 
-Alt keys.`);
+Alt keys.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("altkey")!;
@@ -284,12 +347,15 @@ Alt keys.`);
   });
 
   it("extensions: none → false", () => {
-    writeAgent("extnone", `---
+    writeAgent(
+      "extnone",
+      `---
 extensions: none
 skills: none
 ---
 
-None.`);
+None.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("extnone")!;
@@ -298,12 +364,15 @@ None.`);
   });
 
   it("extensions: true → true (inherit all)", () => {
-    writeAgent("exttrue", `---
+    writeAgent(
+      "exttrue",
+      `---
 extensions: true
 skills: true
 ---
 
-All.`);
+All.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("exttrue")!;
@@ -312,10 +381,13 @@ All.`);
   });
 
   it("handles enabled: false frontmatter", () => {
-    writeAgent("disabled", `---
+    writeAgent(
+      "disabled",
+      `---
 enabled: false
 ---
-`);
+`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("disabled")!;
@@ -323,24 +395,30 @@ enabled: false
   });
 
   it("parses display_name frontmatter", () => {
-    writeAgent("myagent", `---
+    writeAgent(
+      "myagent",
+      `---
 description: My Agent
 display_name: MyAgent
 ---
 
-Agent prompt.`);
+Agent prompt.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("myagent")!.displayName).toBe("MyAgent");
   });
 
   it("parses disallowed_tools as csv list", () => {
-    writeAgent("restricted", `---
+    writeAgent(
+      "restricted",
+      `---
 description: Restricted Agent
 disallowed_tools: bash, write
 ---
 
-No bash or write.`);
+No bash or write.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     const agent = result.get("restricted")!;
@@ -348,90 +426,153 @@ No bash or write.`);
   });
 
   it("disallowed_tools defaults to undefined when omitted", () => {
-    writeAgent("unrestricted", `---
+    writeAgent(
+      "unrestricted",
+      `---
 description: Unrestricted
 ---
 
-All tools.`);
+All tools.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("unrestricted")!.disallowedTools).toBeUndefined();
   });
 
+  it("parses fallback_models from CSV", () => {
+    writeAgent(
+      "fallback-csv",
+      `---
+description: Fallback CSV
+model: anthropic/claude-sonnet-4-6
+fallback_models: anthropic/claude-haiku-4-5-20251001, openai/gpt-4.1-mini
+---
+
+Fallback test.`,
+    );
+
+    const result = loadCustomAgents(tmpDir);
+    expect(result.get("fallback-csv")!.fallbackModels).toEqual([
+      "anthropic/claude-haiku-4-5-20251001",
+      "openai/gpt-4.1-mini",
+    ]);
+  });
+
+  it("parses fallback_models from YAML list", () => {
+    writeAgent(
+      "fallback-list",
+      `---
+description: Fallback list
+fallback_models:
+  - anthropic/claude-haiku-4-5-20251001
+  - openai/gpt-4.1-mini
+---
+
+Fallback list test.`,
+    );
+
+    const result = loadCustomAgents(tmpDir);
+    expect(result.get("fallback-list")!.fallbackModels).toEqual([
+      "anthropic/claude-haiku-4-5-20251001",
+      "openai/gpt-4.1-mini",
+    ]);
+  });
+
   it("parses memory scope", () => {
-    writeAgent("rememberer", `---
+    writeAgent(
+      "rememberer",
+      `---
 description: Agent with memory
 memory: project
 ---
 
-Remember things.`);
+Remember things.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("rememberer")!.memory).toBe("project");
   });
 
   it("parses memory: user scope", () => {
-    writeAgent("global-mem", `---
+    writeAgent(
+      "global-mem",
+      `---
 memory: user
 ---
 
-User memory.`);
+User memory.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("global-mem")!.memory).toBe("user");
   });
 
   it("memory defaults to undefined when omitted", () => {
-    writeAgent("no-mem", `---
+    writeAgent(
+      "no-mem",
+      `---
 description: No memory
 ---
 
-Stateless.`);
+Stateless.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("no-mem")!.memory).toBeUndefined();
   });
 
   it("rejects invalid memory scope", () => {
-    writeAgent("bad-mem", `---
+    writeAgent(
+      "bad-mem",
+      `---
 memory: invalid
 ---
 
-Bad memory.`);
+Bad memory.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("bad-mem")!.memory).toBeUndefined();
   });
 
   it("parses isolation: worktree", () => {
-    writeAgent("isolated-wt", `---
+    writeAgent(
+      "isolated-wt",
+      `---
 description: Worktree agent
 isolation: worktree
 ---
 
-Isolated.`);
+Isolated.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("isolated-wt")!.isolation).toBe("worktree");
   });
 
   it("isolation defaults to undefined when omitted", () => {
-    writeAgent("no-isolation", `---
+    writeAgent(
+      "no-isolation",
+      `---
 description: Normal
 ---
 
-Normal.`);
+Normal.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("no-isolation")!.isolation).toBeUndefined();
   });
 
   it("rejects invalid isolation mode", () => {
-    writeAgent("bad-isolation", `---
+    writeAgent(
+      "bad-isolation",
+      `---
 isolation: docker
 ---
 
-Bad isolation.`);
+Bad isolation.`,
+    );
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("bad-isolation")!.isolation).toBeUndefined();

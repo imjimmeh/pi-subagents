@@ -17,6 +17,8 @@ export interface SubagentsSettings {
   defaultMaxTurns?: number;
   graceTurns?: number;
   defaultJoinMode?: JoinMode;
+  /** Ordered fallback model IDs used when an agent's primary model fails. */
+  fallbackModels?: string[];
   /**
    * Master switch for the schedule subagent feature. Defaults to `true`.
    * When `false`: the `Agent` tool's `schedule` param + its guideline are
@@ -34,13 +36,18 @@ export interface SettingsAppliers {
   setDefaultMaxTurns: (n: number) => void;
   setGraceTurns: (n: number) => void;
   setDefaultJoinMode: (mode: JoinMode) => void;
+  setGlobalFallbackModels: (models: string[]) => void;
   setSchedulingEnabled: (b: boolean) => void;
 }
 
 /** Emit callback — a subset of `pi.events.emit` to keep helpers testable. */
 export type SettingsEmit = (event: string, payload: unknown) => void;
 
-const VALID_JOIN_MODES: ReadonlySet<string> = new Set<JoinMode>(["async", "group", "smart"]);
+const VALID_JOIN_MODES: ReadonlySet<string> = new Set<JoinMode>([
+  "async",
+  "group",
+  "smart",
+]);
 
 // Sanity ceilings — prevent hand-edited configs from asking for values that
 // make no operational sense (e.g. 1e6 concurrent subagents). Permissive enough
@@ -48,6 +55,24 @@ const VALID_JOIN_MODES: ReadonlySet<string> = new Set<JoinMode>(["async", "group
 const MAX_CONCURRENT_CEILING = 1024;
 const MAX_TURNS_CEILING = 10_000;
 const GRACE_TURNS_CEILING = 1_000;
+
+function sanitizeModelList(val: unknown): string[] | undefined {
+  if (val == null) return undefined;
+
+  let items: string[];
+  if (Array.isArray(val)) {
+    items = val.map((v) => String(v).trim()).filter(Boolean);
+  } else if (typeof val === "string") {
+    items = val
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean);
+  } else {
+    return undefined;
+  }
+
+  return items.length > 0 ? [...new Set(items)] : undefined;
+}
 
 /** Drop fields that don't match the expected shape. Silent — garbage becomes absent. */
 function sanitize(raw: unknown): SubagentsSettings {
@@ -75,8 +100,17 @@ function sanitize(raw: unknown): SubagentsSettings {
   ) {
     out.graceTurns = r.graceTurns as number;
   }
-  if (typeof r.defaultJoinMode === "string" && VALID_JOIN_MODES.has(r.defaultJoinMode)) {
+  if (
+    typeof r.defaultJoinMode === "string" &&
+    VALID_JOIN_MODES.has(r.defaultJoinMode)
+  ) {
     out.defaultJoinMode = r.defaultJoinMode as JoinMode;
+  }
+  const fallbackModels = sanitizeModelList(
+    r.fallbackModels ?? r.fallback_models,
+  );
+  if (fallbackModels) {
+    out.fallbackModels = fallbackModels;
   }
   if (typeof r.schedulingEnabled === "boolean") {
     out.schedulingEnabled = r.schedulingEnabled;
@@ -103,14 +137,19 @@ function readSettingsFile(path: string): SubagentsSettings {
     return sanitize(JSON.parse(readFileSync(path, "utf-8")));
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    console.warn(`[pi-subagents] Ignoring malformed settings at ${path}: ${reason}`);
+    console.warn(
+      `[pi-subagents] Ignoring malformed settings at ${path}: ${reason}`,
+    );
     return {};
   }
 }
 
 /** Load merged settings: global provides defaults, project overrides. */
 export function loadSettings(cwd: string = process.cwd()): SubagentsSettings {
-  return { ...readSettingsFile(globalPath()), ...readSettingsFile(projectPath(cwd)) };
+  return {
+    ...readSettingsFile(globalPath()),
+    ...readSettingsFile(projectPath(cwd)),
+  };
 }
 
 /**
@@ -118,7 +157,10 @@ export function loadSettings(cwd: string = process.cwd()): SubagentsSettings {
  * Returns `true` on success, `false` if the write (or mkdir) failed so the
  * caller can surface a warning — persistence isn't fatal but isn't silent.
  */
-export function saveSettings(s: SubagentsSettings, cwd: string = process.cwd()): boolean {
+export function saveSettings(
+  s: SubagentsSettings,
+  cwd: string = process.cwd(),
+): boolean {
   const path = projectPath(cwd);
   try {
     mkdirSync(dirname(path), { recursive: true });
@@ -130,12 +172,20 @@ export function saveSettings(s: SubagentsSettings, cwd: string = process.cwd()):
 }
 
 /** Apply persisted settings to the in-memory state via caller-supplied setters. */
-export function applySettings(s: SubagentsSettings, appliers: SettingsAppliers): void {
-  if (typeof s.maxConcurrent === "number") appliers.setMaxConcurrent(s.maxConcurrent);
-  if (typeof s.defaultMaxTurns === "number") appliers.setDefaultMaxTurns(s.defaultMaxTurns);
+export function applySettings(
+  s: SubagentsSettings,
+  appliers: SettingsAppliers,
+): void {
+  if (typeof s.maxConcurrent === "number")
+    appliers.setMaxConcurrent(s.maxConcurrent);
+  if (typeof s.defaultMaxTurns === "number")
+    appliers.setDefaultMaxTurns(s.defaultMaxTurns);
   if (typeof s.graceTurns === "number") appliers.setGraceTurns(s.graceTurns);
   if (s.defaultJoinMode) appliers.setDefaultJoinMode(s.defaultJoinMode);
-  if (typeof s.schedulingEnabled === "boolean") appliers.setSchedulingEnabled(s.schedulingEnabled);
+  if (Array.isArray(s.fallbackModels))
+    appliers.setGlobalFallbackModels(s.fallbackModels);
+  if (typeof s.schedulingEnabled === "boolean")
+    appliers.setSchedulingEnabled(s.schedulingEnabled);
 }
 
 /**
@@ -149,7 +199,10 @@ export function persistToastFor(
 ): { message: string; level: "info" | "warning" } {
   return persisted
     ? { message: successMsg, level: "info" }
-    : { message: `${successMsg} (session only; failed to persist)`, level: "warning" };
+    : {
+        message: `${successMsg} (session only; failed to persist)`,
+        level: "warning",
+      };
 }
 
 /**

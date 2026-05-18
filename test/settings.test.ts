@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -63,22 +70,38 @@ describe("settings persistence", () => {
 
   it("loads from global when no project file", () => {
     writeGlobal({ maxConcurrent: 16, graceTurns: 10 });
-    expect(loadSettings(projectDir)).toEqual({ maxConcurrent: 16, graceTurns: 10 });
+    expect(loadSettings(projectDir)).toEqual({
+      maxConcurrent: 16,
+      graceTurns: 10,
+    });
   });
 
   it("loads from project when no global file", () => {
     writeProject({ maxConcurrent: 8, defaultJoinMode: "group" });
-    expect(loadSettings(projectDir)).toEqual({ maxConcurrent: 8, defaultJoinMode: "group" });
+    expect(loadSettings(projectDir)).toEqual({
+      maxConcurrent: 8,
+      defaultJoinMode: "group",
+    });
   });
 
   it("merges global + project with project winning on conflicts", () => {
-    writeGlobal({ maxConcurrent: 16, graceTurns: 10, defaultJoinMode: "async" });
-    writeProject({ maxConcurrent: 4, defaultMaxTurns: 50 });
+    writeGlobal({
+      maxConcurrent: 16,
+      graceTurns: 10,
+      defaultJoinMode: "async",
+      fallbackModels: ["anthropic/claude-haiku-4-5-20251001"],
+    });
+    writeProject({
+      maxConcurrent: 4,
+      defaultMaxTurns: 50,
+      fallbackModels: ["openai/gpt-4.1-mini"],
+    });
     expect(loadSettings(projectDir)).toEqual({
       maxConcurrent: 4, // project wins
       graceTurns: 10, // from global
       defaultJoinMode: "async", // from global
       defaultMaxTurns: 50, // from project only
+      fallbackModels: ["openai/gpt-4.1-mini"], // project wins
     });
   });
 
@@ -88,10 +111,27 @@ describe("settings persistence", () => {
       defaultMaxTurns: 30,
       graceTurns: 3,
       defaultJoinMode: "smart" as const,
+      fallbackModels: [
+        "anthropic/claude-haiku-4-5-20251001",
+        "openai/gpt-4.1-mini",
+      ],
       schedulingEnabled: false,
     };
     saveSettings(settings, projectDir);
     expect(loadSettings(projectDir)).toEqual(settings);
+  });
+
+  it("supports snake_case fallback_models in settings.json", () => {
+    writeProject({
+      fallback_models:
+        "anthropic/claude-haiku-4-5-20251001, openai/gpt-4.1-mini",
+    });
+    expect(loadSettings(projectDir)).toEqual({
+      fallbackModels: [
+        "anthropic/claude-haiku-4-5-20251001",
+        "openai/gpt-4.1-mini",
+      ],
+    });
   });
 
   it("round-trips schedulingEnabled (true and false), and absence stays absent", () => {
@@ -118,9 +158,13 @@ describe("settings persistence", () => {
     saveSettings({ maxConcurrent: 2 }, projectDir);
 
     // Project file contains the new value
-    expect(JSON.parse(readFileSync(projectFile(), "utf-8"))).toEqual({ maxConcurrent: 2 });
+    expect(JSON.parse(readFileSync(projectFile(), "utf-8"))).toEqual({
+      maxConcurrent: 2,
+    });
     // Global file unchanged
-    expect(JSON.parse(readFileSync(globalFile(), "utf-8"))).toEqual({ maxConcurrent: 16 });
+    expect(JSON.parse(readFileSync(globalFile(), "utf-8"))).toEqual({
+      maxConcurrent: 16,
+    });
   });
 
   it("saveSettings creates <cwd>/.pi/ when missing", () => {
@@ -145,7 +189,10 @@ describe("settings persistence", () => {
   it("composes partial global + partial project correctly", () => {
     writeGlobal({ graceTurns: 10 });
     writeProject({ maxConcurrent: 2 });
-    expect(loadSettings(projectDir)).toEqual({ graceTurns: 10, maxConcurrent: 2 });
+    expect(loadSettings(projectDir)).toEqual({
+      graceTurns: 10,
+      maxConcurrent: 2,
+    });
   });
 
   describe("sanitizer", () => {
@@ -216,11 +263,52 @@ describe("settings persistence", () => {
         graceTurns: 3, // ok
         defaultJoinMode: "nope", // dropped
       });
-      expect(loadSettings(projectDir)).toEqual({ maxConcurrent: 4, graceTurns: 3 });
+      expect(loadSettings(projectDir)).toEqual({
+        maxConcurrent: 4,
+        graceTurns: 3,
+      });
+    });
+
+    it("sanitizes fallbackModels from string or list and de-duplicates", () => {
+      writeProject({
+        fallbackModels:
+          "anthropic/claude-haiku-4-5-20251001, openai/gpt-4.1-mini, anthropic/claude-haiku-4-5-20251001",
+      });
+      expect(loadSettings(projectDir)).toEqual({
+        fallbackModels: [
+          "anthropic/claude-haiku-4-5-20251001",
+          "openai/gpt-4.1-mini",
+        ],
+      });
+
+      writeProject({
+        fallbackModels: [
+          "anthropic/claude-haiku-4-5-20251001",
+          "openai/gpt-4.1-mini",
+          "openai/gpt-4.1-mini",
+        ],
+      });
+      expect(loadSettings(projectDir)).toEqual({
+        fallbackModels: [
+          "anthropic/claude-haiku-4-5-20251001",
+          "openai/gpt-4.1-mini",
+        ],
+      });
+    });
+
+    it("drops invalid fallbackModels values", () => {
+      writeProject({ fallbackModels: 42 });
+      expect(loadSettings(projectDir)).toEqual({});
+      writeProject({ fallbackModels: [] });
+      expect(loadSettings(projectDir)).toEqual({});
     });
 
     it("accepts values at the ceiling (maxConcurrent=1024, defaultMaxTurns=10000, graceTurns=1000)", () => {
-      writeProject({ maxConcurrent: 1024, defaultMaxTurns: 10_000, graceTurns: 1_000 });
+      writeProject({
+        maxConcurrent: 1024,
+        defaultMaxTurns: 10_000,
+        graceTurns: 1_000,
+      });
       expect(loadSettings(projectDir)).toEqual({
         maxConcurrent: 1024,
         defaultMaxTurns: 10_000,
@@ -238,7 +326,11 @@ describe("settings persistence", () => {
     });
 
     it("drops absurdly large values (e.g. 1e6)", () => {
-      writeProject({ maxConcurrent: 1_000_000, defaultMaxTurns: 1_000_000, graceTurns: 1_000_000 });
+      writeProject({
+        maxConcurrent: 1_000_000,
+        defaultMaxTurns: 1_000_000,
+        graceTurns: 1_000_000,
+      });
       expect(loadSettings(projectDir)).toEqual({});
     });
   });
@@ -246,13 +338,18 @@ describe("settings persistence", () => {
   describe("save result + corrupt-file warning", () => {
     it("saveSettings returns true on success", () => {
       expect(saveSettings({ maxConcurrent: 2 }, projectDir)).toBe(true);
-      expect(JSON.parse(readFileSync(projectFile(), "utf-8"))).toEqual({ maxConcurrent: 2 });
+      expect(JSON.parse(readFileSync(projectFile(), "utf-8"))).toEqual({
+        maxConcurrent: 2,
+      });
     });
 
     it("saveSettings returns false when the target dir cannot be created", () => {
       // Place a regular file where the parent of the settings file would go —
       // mkdirSync + writeFileSync both fail with ENOTDIR / EEXIST.
-      const filePosingAsCwd = join(tmpdir(), `pi-settings-notdir-${Date.now()}`);
+      const filePosingAsCwd = join(
+        tmpdir(),
+        `pi-settings-notdir-${Date.now()}`,
+      );
       writeFileSync(filePosingAsCwd, "");
       try {
         expect(saveSettings({ maxConcurrent: 1 }, filePosingAsCwd)).toBe(false);
@@ -268,7 +365,9 @@ describe("settings persistence", () => {
       try {
         expect(loadSettings(projectDir)).toEqual({});
         expect(spy).toHaveBeenCalledTimes(1);
-        expect(String(spy.mock.calls[0][0])).toMatch(/Ignoring malformed settings/);
+        expect(String(spy.mock.calls[0][0])).toMatch(
+          /Ignoring malformed settings/,
+        );
       } finally {
         spy.mockRestore();
       }
@@ -294,6 +393,7 @@ describe("settings persistence", () => {
         setDefaultMaxTurns: vi.fn(),
         setGraceTurns: vi.fn(),
         setDefaultJoinMode: vi.fn(),
+        setGlobalFallbackModels: vi.fn(),
         setSchedulingEnabled: vi.fn(),
       };
     });
@@ -304,6 +404,7 @@ describe("settings persistence", () => {
       expect(appliers.setDefaultMaxTurns).not.toHaveBeenCalled();
       expect(appliers.setGraceTurns).not.toHaveBeenCalled();
       expect(appliers.setDefaultJoinMode).not.toHaveBeenCalled();
+      expect(appliers.setGlobalFallbackModels).not.toHaveBeenCalled();
       expect(appliers.setSchedulingEnabled).not.toHaveBeenCalled();
     });
 
@@ -313,16 +414,18 @@ describe("settings persistence", () => {
       expect(appliers.setGraceTurns).toHaveBeenCalledWith(3);
       expect(appliers.setDefaultMaxTurns).not.toHaveBeenCalled();
       expect(appliers.setDefaultJoinMode).not.toHaveBeenCalled();
+      expect(appliers.setGlobalFallbackModels).not.toHaveBeenCalled();
       expect(appliers.setSchedulingEnabled).not.toHaveBeenCalled();
     });
 
-    it("applies all five fields when all are present", () => {
+    it("applies all fields when all are present", () => {
       applySettings(
         {
           maxConcurrent: 8,
           defaultMaxTurns: 50,
           graceTurns: 7,
           defaultJoinMode: "group",
+          fallbackModels: ["anthropic/claude-haiku-4-5-20251001"],
           schedulingEnabled: false,
         },
         appliers,
@@ -331,6 +434,9 @@ describe("settings persistence", () => {
       expect(appliers.setDefaultMaxTurns).toHaveBeenCalledWith(50);
       expect(appliers.setGraceTurns).toHaveBeenCalledWith(7);
       expect(appliers.setDefaultJoinMode).toHaveBeenCalledWith("group");
+      expect(appliers.setGlobalFallbackModels).toHaveBeenCalledWith([
+        "anthropic/claude-haiku-4-5-20251001",
+      ]);
       expect(appliers.setSchedulingEnabled).toHaveBeenCalledWith(false);
     });
 
@@ -359,6 +465,13 @@ describe("settings persistence", () => {
       applySettings({ maxConcurrent: 4 }, appliers);
       expect(appliers.setSchedulingEnabled).not.toHaveBeenCalled();
     });
+
+    it("calls setGlobalFallbackModels when fallbackModels are present", () => {
+      applySettings({ fallbackModels: ["openai/gpt-4.1-mini"] }, appliers);
+      expect(appliers.setGlobalFallbackModels).toHaveBeenCalledWith([
+        "openai/gpt-4.1-mini",
+      ]);
+    });
   });
 
   describe("persistToastFor", () => {
@@ -386,6 +499,7 @@ describe("settings persistence", () => {
         setDefaultMaxTurns: vi.fn(),
         setGraceTurns: vi.fn(),
         setDefaultJoinMode: vi.fn(),
+        setGlobalFallbackModels: vi.fn(),
         setSchedulingEnabled: vi.fn(),
       };
     });
@@ -414,7 +528,9 @@ describe("settings persistence", () => {
 
       const result = applyAndEmitLoaded(appliers, emit, projectDir);
 
-      expect(emit).toHaveBeenCalledWith("subagents:settings_loaded", { settings: {} });
+      expect(emit).toHaveBeenCalledWith("subagents:settings_loaded", {
+        settings: {},
+      });
       expect(result).toEqual({});
       // No setters fired — defaults preserved
       expect(appliers.setMaxConcurrent).not.toHaveBeenCalled();
@@ -429,20 +545,33 @@ describe("settings persistence", () => {
       const emit = vi.fn();
       const snapshot = { maxConcurrent: 5, graceTurns: 2 };
 
-      const toast = saveAndEmitChanged(snapshot, "Max concurrency set to 5", emit, projectDir);
+      const toast = saveAndEmitChanged(
+        snapshot,
+        "Max concurrency set to 5",
+        emit,
+        projectDir,
+      );
 
       expect(emit).toHaveBeenCalledTimes(1);
       expect(emit).toHaveBeenCalledWith("subagents:settings_changed", {
         settings: snapshot,
         persisted: true,
       });
-      expect(toast).toEqual({ message: "Max concurrency set to 5", level: "info" });
+      expect(toast).toEqual({
+        message: "Max concurrency set to 5",
+        level: "info",
+      });
       // File actually written
-      expect(JSON.parse(readFileSync(projectFile(), "utf-8"))).toEqual(snapshot);
+      expect(JSON.parse(readFileSync(projectFile(), "utf-8"))).toEqual(
+        snapshot,
+      );
     });
 
     it("emits with persisted=false and returns warning toast on save failure", () => {
-      const filePosingAsCwd = join(tmpdir(), `pi-settings-notdir-${Date.now()}`);
+      const filePosingAsCwd = join(
+        tmpdir(),
+        `pi-settings-notdir-${Date.now()}`,
+      );
       writeFileSync(filePosingAsCwd, "");
       const emit = vi.fn();
       try {

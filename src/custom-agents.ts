@@ -22,18 +22,22 @@ export function loadCustomAgents(cwd: string): Map<string, AgentConfig> {
   const projectDir = join(cwd, ".pi", "agents");
 
   const agents = new Map<string, AgentConfig>();
-  loadFromDir(globalDir, agents, "global");   // lower priority
-  loadFromDir(projectDir, agents, "project");  // higher priority (overwrites)
+  loadFromDir(globalDir, agents, "global"); // lower priority
+  loadFromDir(projectDir, agents, "project"); // higher priority (overwrites)
   return agents;
 }
 
 /** Load agent configs from a directory into the map. */
-function loadFromDir(dir: string, agents: Map<string, AgentConfig>, source: "project" | "global"): void {
+function loadFromDir(
+  dir: string,
+  agents: Map<string, AgentConfig>,
+  source: "project" | "global",
+): void {
   if (!existsSync(dir)) return;
 
   let files: string[];
   try {
-    files = readdirSync(dir).filter(f => f.endsWith(".md"));
+    files = readdirSync(dir).filter((f) => f.endsWith(".md"));
   } catch {
     return;
   }
@@ -48,7 +52,8 @@ function loadFromDir(dir: string, agents: Map<string, AgentConfig>, source: "pro
       continue;
     }
 
-    const { frontmatter: fm, body } = parseFrontmatter<Record<string, unknown>>(content);
+    const { frontmatter: fm, body } =
+      parseFrontmatter<Record<string, unknown>>(content);
 
     agents.set(name, {
       name,
@@ -59,16 +64,21 @@ function loadFromDir(dir: string, agents: Map<string, AgentConfig>, source: "pro
       extensions: inheritField(fm.extensions ?? fm.inherit_extensions),
       skills: inheritField(fm.skills ?? fm.inherit_skills),
       model: str(fm.model),
+      fallbackModels: csvListOptional(fm.fallback_models),
       thinking: str(fm.thinking) as ThinkingLevel | undefined,
       maxTurns: nonNegativeInt(fm.max_turns),
       systemPrompt: body.trim(),
       promptMode: fm.prompt_mode === "append" ? "append" : "replace",
-      inheritContext: fm.inherit_context != null ? fm.inherit_context === true : undefined,
-      runInBackground: fm.run_in_background != null ? fm.run_in_background === true : undefined,
+      inheritContext:
+        fm.inherit_context != null ? fm.inherit_context === true : undefined,
+      runInBackground:
+        fm.run_in_background != null
+          ? fm.run_in_background === true
+          : undefined,
       isolated: fm.isolated != null ? fm.isolated === true : undefined,
       memory: parseMemory(fm.memory),
       isolation: fm.isolation === "worktree" ? "worktree" : undefined,
-      enabled: fm.enabled !== false,  // default true; explicitly false disables
+      enabled: fm.enabled !== false, // default true; explicitly false disables
       source,
     });
   }
@@ -92,9 +102,16 @@ function nonNegativeInt(val: unknown): number | undefined {
  */
 function parseCsvField(val: unknown): string[] | undefined {
   if (val === undefined || val === null) return undefined;
+  if (Array.isArray(val)) {
+    const items = val.map((v) => String(v).trim()).filter(Boolean);
+    return items.length > 0 ? items : undefined;
+  }
   const s = String(val).trim();
   if (!s || s === "none") return undefined;
-  const items = s.split(",").map(t => t.trim()).filter(Boolean);
+  const items = s
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
   return items.length > 0 ? items : undefined;
 }
 
