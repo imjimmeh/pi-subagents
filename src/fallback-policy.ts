@@ -57,11 +57,15 @@ const RETRYABLE_PATTERNS = [
   "504",
 ] as const;
 
-export const FALLBACK_DEFAULTS = {
+export const FALLBACK_DEFAULTS: {
+  maxRetriesPerModel: number;
+  initialRetryDelayMs: number;
+  maxRetryDelayMs: number;
+} = {
   maxRetriesPerModel: 3,
   initialRetryDelayMs: 1000,
   maxRetryDelayMs: 30_000,
-} as const;
+};
 
 export function parseProviderError(errorMessage: string): ProviderError | null {
   try {

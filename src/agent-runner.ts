@@ -24,6 +24,12 @@ import {
 import { buildParentContext, extractText } from "./context.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import { detectEnv } from "./env.js";
+import {
+  classifyRetryableError,
+  extractErrorMessage,
+  FALLBACK_DEFAULTS,
+  shouldFallbackForState,
+} from "./fallback-policy.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { preloadSkills } from "./skill-loader.js";
@@ -137,6 +143,18 @@ function buildModelAttemptChain(
   }
   push(parentModel);
   return chain;
+}
+
+function getModelName(model: Model<any> | undefined): string {
+  if (!model) return "<default>";
+  const m = model as any;
+  const provider = String(m.provider ?? "unknown");
+  const id = String(m.id ?? m.name ?? "unknown");
+  return `${provider}/${id}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Info about a tool event in the subagent. */
@@ -371,7 +389,18 @@ export async function runAgent(
 
   for (let i = 0; i < attemptList.length; i++) {
     const model = attemptList[i];
-    try {
+    const modelName = getModelName(model);
+    let modelTerminalError: string | null = null;
+    let retryDelayMs = FALLBACK_DEFAULTS.initialRetryDelayMs;
+
+    for (let retry = 0; retry <= FALLBACK_DEFAULTS.maxRetriesPerModel; retry++) {
+      let hasOutput = false;
+      let hasToolExecution = false;
+      let streamErrorReason: string | null = null;
+      let streamErrorRetryable = false;
+      let streamErrorDelayMs: number | undefined;
+
+      try {
       // Load extensions/skills: true or string[] → load; false → don't.
       // Suppress AGENTS.md/CLAUDE.md and APPEND_SYSTEM.md — upstream's
       // buildSystemPrompt() re-appends both AFTER systemPromptOverride, which
@@ -482,13 +511,27 @@ export async function runAgent(
           event.type === "message_update" &&
           event.assistantMessageEvent.type === "text_delta"
         ) {
+          hasOutput = true;
           currentMessageText += event.assistantMessageEvent.delta;
           options.onTextDelta?.(
             event.assistantMessageEvent.delta,
             currentMessageText,
           );
         }
+        if (
+          event.type === "message_update" &&
+          (event.assistantMessageEvent as any).type === "error"
+        ) {
+          const reason = extractErrorMessage(
+            (event.assistantMessageEvent as any).error ?? event.assistantMessageEvent,
+          );
+          const decision = classifyRetryableError(reason);
+          streamErrorReason = reason;
+          streamErrorRetryable = decision.retryable;
+          streamErrorDelayMs = decision.delayMs;
+        }
         if (event.type === "tool_execution_start") {
+          hasToolExecution = true;
           options.onToolActivity?.({ type: "start", toolName: event.toolName });
         }
         if (event.type === "tool_execution_end") {
@@ -525,18 +568,64 @@ export async function runAgent(
         cleanupAbort();
       }
 
+      if (streamErrorReason) {
+        const canFallback = shouldFallbackForState({
+          hasOutput,
+          hasToolExecution,
+        });
+        if (streamErrorRetryable && canFallback) {
+          throw new Error(streamErrorReason);
+        }
+        throw new Error(
+          canFallback
+            ? streamErrorReason
+            : `Cannot fallback after commit point: ${streamErrorReason}`,
+        );
+      }
+
       const responseText =
         collector.getText().trim() || getLastAssistantText(session);
       return { responseText, session, aborted, steered: softLimitReached };
-    } catch (err) {
-      if (options.signal?.aborted) throw err;
+      } catch (err) {
+        if (options.signal?.aborted) throw err;
 
-      const reason = err instanceof Error ? err.message : String(err);
-      errors.push(`attempt ${i + 1}/${attemptList.length}: ${reason}`);
+        const reason = extractErrorMessage(err);
+        const retryDecision = streamErrorReason
+          ? {
+              retryable: streamErrorRetryable,
+              delayMs: streamErrorDelayMs,
+            }
+          : classifyRetryableError(reason);
+        const canFallback = shouldFallbackForState({
+          hasOutput,
+          hasToolExecution,
+        });
 
-      if (i === attemptList.length - 1) {
-        throw new Error(errors.join("\n"));
+        if (!canFallback) {
+          throw new Error(reason);
+        }
+
+        if (retryDecision.retryable && retry < FALLBACK_DEFAULTS.maxRetriesPerModel) {
+          const delay = retryDecision.delayMs ?? retryDelayMs;
+          await sleep(delay);
+          retryDelayMs = Math.min(
+            retryDelayMs * 2,
+            FALLBACK_DEFAULTS.maxRetryDelayMs,
+          );
+          continue;
+        }
+
+        modelTerminalError = reason;
+        break;
       }
+    }
+
+    errors.push(
+      `attempt ${i + 1}/${attemptList.length} (${modelName}): ${modelTerminalError ?? "unknown failure"}`,
+    );
+
+    if (i === attemptList.length - 1) {
+      throw new Error(errors.join("\n"));
     }
   }
 

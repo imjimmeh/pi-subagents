@@ -287,6 +287,114 @@ describe("agent-runner final output capture", () => {
       id: "gpt-4.1-mini",
     });
   });
+
+  it("falls back when a retryable provider error event occurs before commit", async () => {
+    const first = createSession("FIRST");
+    first.session.prompt = vi.fn(async () => {
+      for (const l of first.listeners) {
+        l({
+          type: "message_update",
+          assistantMessageEvent: {
+            type: "error",
+            error: { errorMessage: "429 Too Many Requests" },
+          },
+        });
+      }
+      // No throw here: fallback should still trigger based on stream error event.
+    });
+
+    const second = createSession("RECOVERED").session;
+
+    createAgentSession
+      .mockResolvedValueOnce({ session: first.session })
+      .mockResolvedValueOnce({ session: second });
+
+    (agentTypes.getAgentConfig as any).mockReturnValue({
+      name: "Explore",
+      description: "Explore",
+      builtinToolNames: ["read"],
+      extensions: false,
+      skills: false,
+      systemPrompt: "You are Explore.",
+      promptMode: "replace",
+      model: "anthropic/claude-sonnet-4-6",
+      fallbackModels: ["openai/gpt-4.1-mini"],
+    });
+
+    ctx.modelRegistry.getAvailable = vi.fn(() => [
+      {
+        provider: "anthropic",
+        id: "claude-sonnet-4-6",
+        name: "Claude Sonnet",
+      },
+      { provider: "openai", id: "gpt-4.1-mini", name: "GPT 4.1 Mini" },
+    ]);
+    ctx.modelRegistry.find = vi.fn((provider: string, modelId: string) => ({
+      provider,
+      id: modelId,
+      name: `${provider}/${modelId}`,
+    }));
+
+    const result = await runAgent(ctx, "Explore", "recover", { pi });
+
+    expect(result.responseText).toBe("RECOVERED");
+    expect(createAgentSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fallback after commit point when tool execution has started", async () => {
+    const first = createSession("FIRST");
+    first.session.prompt = vi.fn(async () => {
+      for (const l of first.listeners) {
+        l({ type: "tool_execution_start", toolName: "read" });
+      }
+      for (const l of first.listeners) {
+        l({
+          type: "message_update",
+          assistantMessageEvent: {
+            type: "error",
+            error: { errorMessage: "429 Too Many Requests" },
+          },
+        });
+      }
+      throw new Error("provider down after tool use");
+    });
+
+    const second = createSession("RECOVERED").session;
+    createAgentSession
+      .mockResolvedValueOnce({ session: first.session })
+      .mockResolvedValueOnce({ session: second });
+
+    (agentTypes.getAgentConfig as any).mockReturnValue({
+      name: "Explore",
+      description: "Explore",
+      builtinToolNames: ["read"],
+      extensions: false,
+      skills: false,
+      systemPrompt: "You are Explore.",
+      promptMode: "replace",
+      model: "anthropic/claude-sonnet-4-6",
+      fallbackModels: ["openai/gpt-4.1-mini"],
+    });
+
+    ctx.modelRegistry.getAvailable = vi.fn(() => [
+      {
+        provider: "anthropic",
+        id: "claude-sonnet-4-6",
+        name: "Claude Sonnet",
+      },
+      { provider: "openai", id: "gpt-4.1-mini", name: "GPT 4.1 Mini" },
+    ]);
+    ctx.modelRegistry.find = vi.fn((provider: string, modelId: string) => ({
+      provider,
+      id: modelId,
+      name: `${provider}/${modelId}`,
+    }));
+
+    await expect(runAgent(ctx, "Explore", "recover", { pi })).rejects.toThrow(
+      "provider down after tool use",
+    );
+    expect(createAgentSession).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ─── message_end → onAssistantUsage wiring (issue #38) ─────────────────
